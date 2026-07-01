@@ -98,30 +98,42 @@ Respond ONLY in this exact JSON format (no markdown, no extra text):
 {"findings":[{"title":"Short finding name","severity":"critical|high|medium|low|info","description":"Clear explanation","impact":"What attacker could do","fix_steps":["Step 1","Step 2","Step 3"],"code_example":"config to disable disclosure or empty string","resources":["https://link.com"]}],"summary":"One sentence summary"}` },
 ];
 
-async function callNvidia(prompt: string): Promise<string> {
-  const apiKey = process.env.NVIDIA_API_KEY;
-  if (!apiKey) throw new Error("NVIDIA_API_KEY not set in .env.local");
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+async function callCerebras(prompt: string, attempt = 1): Promise<string> {
+  const apiKey = process.env.CEREBRAS_API_KEY;
+  if (!apiKey) throw new Error("CEREBRAS_API_KEY not set in .env.local");
+
+  const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "meta/llama-3.3-70b-instruct",
+      model: "gpt-oss-120b",
       messages: [{ role: "user", content: prompt }],
-      max_tokens: 1500,
+      max_tokens: 3000,
+      reasoning_effort: "low",
     }),
   });
 
+  // Retry on rate limit with exponential backoff (max 4 attempts: 3s, 6s, 12s, 24s waits)
+  if (res.status === 429 && attempt <= 4) {
+    const waitMs = 3000 * Math.pow(2, attempt - 1);
+    console.log(`  429 rate-limited, waiting ${waitMs}ms then retrying (attempt ${attempt}/4)`);
+    await sleep(waitMs);
+    return callCerebras(prompt, attempt + 1);
+  }
+
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Nvidia API error ${res.status}: ${err}`);
+    throw new Error(`Cerebras API error ${res.status}: ${err}`);
   }
 
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || "";
+  const msg = data.choices?.[0]?.message;
+  return msg?.content || msg?.reasoning || "";
 }
 
 export async function POST(req: NextRequest) {
@@ -137,24 +149,34 @@ export async function POST(req: NextRequest) {
 
       send({ type: "start", total: AGENTS.length });
 
-      const agentPromises = AGENTS.map(async (agent) => {
+      const runAgent = async (agent: typeof AGENTS[0]) => {
         send({ type: "agent_start", agentId: agent.id, name: agent.name, emoji: agent.emoji });
         try {
-          const text = await callNvidia(agent.prompt(url));
+          const text = await callCerebras(agent.prompt(url));
           let parsed;
           try {
             const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-            parsed = JSON.parse(clean);
+            const jsonMatch = clean.match(/\{[\s\S]*\}/);
+            parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
           } catch {
             parsed = { findings: [{ title: "Analysis completed", severity: "info", description: text.slice(0, 300), impact: "Review manually", fix_steps: ["Manual review needed"], code_example: "", resources: [] }], summary: "Agent completed" };
           }
           send({ type: "agent_done", agentId: agent.id, name: agent.name, emoji: agent.emoji, description: agent.description, findings: parsed.findings || [], summary: parsed.summary || "" });
         } catch (err) {
+          console.error(`[${agent.id}]`, err);
           send({ type: "agent_error", agentId: agent.id, name: agent.name, emoji: agent.emoji, error: err instanceof Error ? err.message : "Unknown error" });
         }
-      });
+      };
 
-      await Promise.all(agentPromises);
+      // Sequential with 2.5s pacing = ~24 RPM, comfortably under Cerebras free tier's 30 RPM.
+      // Total scan time: ~30-40s. Trade-off: reliable > fast for free-tier demo.
+      for (let i = 0; i < AGENTS.length; i++) {
+        await runAgent(AGENTS[i]);
+        if (i < AGENTS.length - 1) {
+          await sleep(2500);
+        }
+      }
+
       send({ type: "done" });
       controller.close();
     },
