@@ -197,6 +197,7 @@ export default function Home() {
   const [agents, setAgents] = useState<Record<string, AgentResult>>({});
   const [done, setDone] = useState(false);
   const [activeTab, setActiveTab] = useState<"all" | Severity>("all");
+  const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const totalFindings = Object.values(agents).reduce((acc, a) => acc + (a.findings?.length || 0), 0);
@@ -224,10 +225,21 @@ export default function Home() {
     setDone(false);
     setAgents(initialAgents);
     setActiveTab("all");
+    setError(null);
 
     abortRef.current = new AbortController();
     try {
       const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: scanUrl }), signal: abortRef.current.signal });
+
+      // Backend rejected the request (e.g. invalid URL)
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: "Something went wrong" }));
+        setError(errData.error || `Request failed (${res.status})`);
+        setScanning(false);
+        setAgents({});
+        return;
+      }
+
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -345,6 +357,15 @@ export default function Home() {
             {scanning ? "⏹ Stop" : "Scan now"}
           </button>
         </div>
+
+        {/* Error banner */}
+        {error && (
+          <div style={{ maxWidth: 680, margin: "0 auto 24px", padding: "12px 18px", background: "rgba(220,38,38,0.1)", border: "1px solid rgba(220,38,38,0.3)", borderRadius: 10, color: "#fca5a5", fontSize: 14, display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 18 }}>⚠</span>
+            <span style={{ flex: 1 }}>{error}</span>
+            <button onClick={() => setError(null)} style={{ background: "transparent", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: 18, padding: 0, lineHeight: 1 }}>×</button>
+          </div>
+        )}
 
         {/* Progress bar */}
         {scanning && (
