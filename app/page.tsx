@@ -231,7 +231,6 @@ export default function Home() {
     try {
       const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: scanUrl }), signal: abortRef.current.signal });
 
-      // Backend rejected the request (e.g. invalid URL)
       if (!res.ok) {
         const errData = await res.json().catch(() => ({ error: "Something went wrong" }));
         setError(errData.error || `Request failed (${res.status})`);
@@ -325,7 +324,7 @@ export default function Home() {
         <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #6366f1, #8b5cf6)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🛡</div>
         <div>
           <div style={{ fontWeight: 700, fontSize: 18, letterSpacing: "-0.3px" }}>Sentinel</div>
-          <div style={{ fontSize: 12, color: "#64748b" }}>AI security scanner — 12 agents in parallel</div>
+          <div style={{ fontSize: 12, color: "#64748b" }}>AI-assisted recon — 12 agents, real HTTP analysis</div>
         </div>
       </div>
 
@@ -335,13 +334,13 @@ export default function Home() {
         {!showAgents && (
           <div style={{ textAlign: "center", marginBottom: 48 }}>
             <div style={{ display: "inline-block", background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 20, padding: "4px 14px", fontSize: 12, color: "#818cf8", marginBottom: 20, letterSpacing: "0.05em" }}>
-              12 AI AGENTS · PARALLEL SCANNING · STEP-BY-STEP FIXES
+              12 AI AGENTS · REAL HTTP ANALYSIS · STEP-BY-STEP FIXES
             </div>
             <h1 style={{ fontSize: 44, fontWeight: 800, letterSpacing: "-1.5px", margin: "0 0 16px", background: "linear-gradient(135deg, #e2e8f0 0%, #94a3b8 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", lineHeight: 1.1 }}>
-              Find & fix every vulnerability<br />before attackers do
+              Surface security issues<br />grounded in real data
             </h1>
             <p style={{ color: "#64748b", fontSize: 17, maxWidth: 500, margin: "0 auto", lineHeight: 1.6 }}>
-              Paste any URL. Get a full security report with step-by-step fix instructions, code examples, and resources — instantly.
+              Paste any URL. Sentinel fetches the real response, probes for exposed files, scans scripts for secrets, and gives step-by-step fixes.
             </p>
           </div>
         )}
@@ -490,7 +489,7 @@ export default function Home() {
           <div style={{ textAlign: "center", padding: "60px 20px" }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
             <div style={{ fontSize: 20, fontWeight: 600, color: "#22c55e" }}>No vulnerabilities found</div>
-            <div style={{ fontSize: 14, marginTop: 8, color: "#64748b" }}>All 12 agents completed without findings.</div>
+            <div style={{ fontSize: 14, marginTop: 8, color: "#64748b" }}>All 12 agents completed. Note: passive/active recon only — not a full pentest.</div>
           </div>
         )}
       </div>
