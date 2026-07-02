@@ -267,42 +267,38 @@ function looksLikeErrorPage(body: string): boolean {
 
 async function probeSensitivePaths(baseUrl: string): Promise<PathProbeResult[]> {
   const origin = new URL(baseUrl).origin;
-  const results: PathProbeResult[] = [];
 
-  for (let i = 0; i < SENSITIVE_PATHS.length; i += 5) {
-    const batch = SENSITIVE_PATHS.slice(i, i + 5);
-    const batchResults = await Promise.all(
-      batch.map(async (path): Promise<PathProbeResult> => {
-        try {
-          const res = await fetchWithTimeout(`${origin}${path}`, PROBE_TIMEOUT_MS, { redirect: "follow" });
-          const contentType = res.headers.get("content-type") || "";
-          let snippet = "";
-          let exposed = false;
+  // Fully parallel — all path probes fire at once for speed.
+  const results = await Promise.all(
+    SENSITIVE_PATHS.map(async (path): Promise<PathProbeResult> => {
+      try {
+        const res = await fetchWithTimeout(`${origin}${path}`, PROBE_TIMEOUT_MS, { redirect: "follow" });
+        const contentType = res.headers.get("content-type") || "";
+        let snippet = "";
+        let exposed = false;
 
-          if (res.ok) {
-            const body = await res.text();
-            if (contentType.includes("text/html")) {
-              if (looksLikeErrorPage(body)) {
-                snippet = "(HTML error/redirect page)";
-                exposed = false;
-              } else {
-                snippet = body.slice(0, 400);
-                exposed = true;
-              }
+        if (res.ok) {
+          const body = await res.text();
+          if (contentType.includes("text/html")) {
+            if (looksLikeErrorPage(body)) {
+              snippet = "(HTML error/redirect page)";
+              exposed = false;
             } else {
               snippet = body.slice(0, 400);
               exposed = true;
             }
+          } else {
+            snippet = body.slice(0, 400);
+            exposed = true;
           }
-
-          return { path, status: res.status, contentType, snippet, exposed };
-        } catch {
-          return { path, status: 0, contentType: "", snippet: "(timeout/unreachable)", exposed: false };
         }
-      })
-    );
-    results.push(...batchResults);
-  }
+
+        return { path, status: res.status, contentType, snippet, exposed };
+      } catch {
+        return { path, status: 0, contentType: "", snippet: "(timeout/unreachable)", exposed: false };
+      }
+    })
+  );
 
   return results;
 }
@@ -357,23 +353,25 @@ async function scanScriptsForSecrets(html: string, baseUrl: string, inlineHtml: 
     results.push({ src: "(inline HTML / inline scripts)", secretsFound: inlineSecrets, sourceMapReferenced: false, error: null });
   }
 
-  // 2. Fetch and scan same-origin external scripts
+  // 2. Fetch and scan same-origin external scripts (in parallel)
   const srcs = extractScriptSrcs(html, baseUrl);
-  for (const src of srcs) {
-    try {
-      const res = await fetchWithTimeout(src, PROBE_TIMEOUT_MS);
-      if (!res.ok) {
-        results.push({ src, secretsFound: [], sourceMapReferenced: false, error: `HTTP ${res.status}` });
-        continue;
+  const scriptResults = await Promise.all(
+    srcs.map(async (src): Promise<ScriptScanResult> => {
+      try {
+        const res = await fetchWithTimeout(src, PROBE_TIMEOUT_MS);
+        if (!res.ok) {
+          return { src, secretsFound: [], sourceMapReferenced: false, error: `HTTP ${res.status}` };
+        }
+        const body = await res.text();
+        const secrets = scanTextForSecrets(body);
+        const sourceMapReferenced = /\/\/[#@]\s*sourceMappingURL=/.test(body);
+        return { src, secretsFound: secrets, sourceMapReferenced, error: null };
+      } catch {
+        return { src, secretsFound: [], sourceMapReferenced: false, error: "fetch failed/timeout" };
       }
-      const body = await res.text();
-      const secrets = scanTextForSecrets(body);
-      const sourceMapReferenced = /\/\/[#@]\s*sourceMappingURL=/.test(body);
-      results.push({ src, secretsFound: secrets, sourceMapReferenced, error: null });
-    } catch {
-      results.push({ src, secretsFound: [], sourceMapReferenced: false, error: "fetch failed/timeout" });
-    }
-  }
+    })
+  );
+  results.push(...scriptResults);
 
   return results;
 }
@@ -828,9 +826,12 @@ export async function POST(req: NextRequest) {
         }
       };
 
-      for (let i = 0; i < AGENTS.length; i++) {
-        await runAgent(AGENTS[i]);
-        if (i < AGENTS.length - 1) await sleep(2500);
+      // Batched — 4 agents at a time. Balances speed vs free-tier rate limits.
+      const BATCH_SIZE = 4;
+      for (let i = 0; i < AGENTS.length; i += BATCH_SIZE) {
+        const batch = AGENTS.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(runAgent));
+        if (i + BATCH_SIZE < AGENTS.length) await sleep(1500);
       }
 
       send({ type: "done" });
