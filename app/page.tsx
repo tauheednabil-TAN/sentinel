@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef } from "react";
+import { DownloadReportButton } from "@/app/components/ReportExport";
 
 type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -30,6 +31,12 @@ const SEV: Record<Severity, { label: string; color: string; bg: string; border: 
   medium:   { label: "Medium",   color: "#fde047", bg: "rgba(202,138,4,0.08)",  border: "rgba(202,138,4,0.35)",  dot: "#ca8a04" },
   low:      { label: "Low",      color: "#86efac", bg: "rgba(22,163,74,0.08)",  border: "rgba(22,163,74,0.35)",  dot: "#16a34a" },
   info:     { label: "Info",     color: "#93c5fd", bg: "rgba(37,99,235,0.08)",  border: "rgba(37,99,235,0.35)",  dot: "#2563eb" },
+};
+
+// Bridges your finding shape → the shape ReportExport expects.
+// (lowercase severity → "Critical", fix_steps → fix, code_example → code)
+const SEV_TO_REPORT: Record<Severity, "Critical" | "High" | "Medium" | "Low" | "Info"> = {
+  critical: "Critical", high: "High", medium: "Medium", low: "Low", info: "Info",
 };
 
 
@@ -210,6 +217,17 @@ export default function Home() {
 
   const filteredFindings = activeTab === "all" ? allFindings : allFindings.filter(f => f.severity === activeTab);
   const countBySev = (s: Severity) => allFindings.filter(f => f.severity === s).length;
+
+  // Map findings into the shape DownloadReportButton / ReportExport expects.
+  const reportFindings = allFindings.map(f => ({
+    agent: f.agentName || "—",
+    title: f.title,
+    severity: SEV_TO_REPORT[f.severity],
+    impact: f.impact,
+    fix: f.fix_steps,
+    code: f.code_example,
+    resources: f.resources,
+  }));
 
   const startScan = async () => {
     if (!url.trim()) return;
@@ -453,6 +471,11 @@ export default function Home() {
                 </div>
               );
             })}
+
+            {/* PDF export — appears once a scan finishes with findings */}
+            <div style={{ marginLeft: "auto" }}>
+              <DownloadReportButton url={url} findings={reportFindings} />
+            </div>
           </div>
         )}
 

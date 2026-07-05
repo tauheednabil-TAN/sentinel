@@ -1,8 +1,7 @@
 import { NextRequest } from "next/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 60; // Vercel Pro allows up to 60s; Hobby caps at 10s (documented in README).
-
+export const maxDuration = 300; // seconds — max for Hobby w/ Fluid Compute
 // =====================================================================
 // TYPES
 // =====================================================================
