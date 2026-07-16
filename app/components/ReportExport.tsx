@@ -151,7 +151,7 @@ export function generateReport({ url, scannedAt, findings }: ScanReport): jsPDF 
   need(chipH + 8);
   for (const { sev, n } of counts) {
     const [r, g, b] = SEV_RGB[sev];
-    doc.setFillColor(r, g, b, 0.1 as any);
+    doc.setFillColor(r, g, b, 0.1);
     doc.setDrawColor(r, g, b);
     doc.setLineWidth(0.8);
     doc.roundedRect(cx, y, chipW, chipH, 5, 5, "S");

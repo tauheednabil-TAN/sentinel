@@ -1,26 +1,327 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Nocturne — Liquid Glass design system
+   Adapts automatically to the system's appearance settings:
+   - prefers-color-scheme (light / dark)
+   - prefers-reduced-transparency (solid materials)
+   - prefers-reduced-motion (calm, static UI)
+   ============================================================ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* dark (default) — deep night sky */
+  --bg-0: #05070f;
+  --bg-1: #0b1026;
+  --bg-2: #151a3a;
+  --ink: rgba(255, 255, 255, 0.95);
+  --ink-2: rgba(255, 255, 255, 0.62);
+  --ink-3: rgba(255, 255, 255, 0.38);
+  --glass-fill: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.03));
+  --glass-fill-strong: linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.06));
+  --glass-stroke: rgba(255, 255, 255, 0.14);
+  --glass-specular: rgba(255, 255, 255, 0.28);
+  --glass-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  --glass-solid: rgba(18, 22, 46, 0.94);
+  --accent: #8b9dff;
+  --accent-soft: rgba(139, 157, 255, 0.22);
+  --aurora-1: rgba(88, 101, 242, 0.30);
+  --aurora-2: rgba(159, 90, 253, 0.22);
+  --aurora-3: rgba(56, 189, 248, 0.16);
+  color-scheme: dark;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --bg-0: #dfe3f5;
+    --bg-1: #e9ecfb;
+    --bg-2: #f4f5ff;
+    --ink: rgba(16, 18, 40, 0.94);
+    --ink-2: rgba(16, 18, 40, 0.60);
+    --ink-3: rgba(16, 18, 40, 0.38);
+    --glass-fill: linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.30));
+    --glass-fill-strong: linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.46));
+    --glass-stroke: rgba(255, 255, 255, 0.75);
+    --glass-specular: rgba(255, 255, 255, 0.95);
+    --glass-shadow: 0 10px 36px rgba(64, 72, 140, 0.22);
+    --glass-solid: rgba(248, 249, 255, 0.96);
+    --accent: #4f5fd8;
+    --accent-soft: rgba(79, 95, 216, 0.16);
+    --aurora-1: rgba(140, 155, 255, 0.45);
+    --aurora-2: rgba(196, 160, 255, 0.38);
+    --aurora-3: rgba(140, 210, 255, 0.34);
+    color-scheme: light;
   }
 }
 
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  height: 100%;
 }
+
+body {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+  overscroll-behavior-y: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---- night-sky backdrop the glass refracts -------------------- */
+
+.sky {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(120% 90% at 50% 0%, var(--bg-2) 0%, var(--bg-1) 45%, var(--bg-0) 100%);
+  overflow: hidden;
+}
+
+.sky::after {
+  /* star field (fades out in light scheme) */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1.2px 1.2px at 12% 18%, rgba(255,255,255,0.9) 50%, transparent 51%),
+    radial-gradient(1px 1px at 28% 8%, rgba(255,255,255,0.7) 50%, transparent 51%),
+    radial-gradient(1.4px 1.4px at 44% 24%, rgba(255,255,255,0.8) 50%, transparent 51%),
+    radial-gradient(1px 1px at 61% 12%, rgba(255,255,255,0.6) 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 76% 30%, rgba(255,255,255,0.85) 50%, transparent 51%),
+    radial-gradient(1px 1px at 88% 9%, rgba(255,255,255,0.7) 50%, transparent 51%),
+    radial-gradient(1.1px 1.1px at 8% 42%, rgba(255,255,255,0.55) 50%, transparent 51%),
+    radial-gradient(1.3px 1.3px at 93% 47%, rgba(255,255,255,0.6) 50%, transparent 51%),
+    radial-gradient(1px 1px at 54% 40%, rgba(255,255,255,0.5) 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 33% 55%, rgba(255,255,255,0.45) 50%, transparent 51%),
+    radial-gradient(1px 1px at 70% 60%, rgba(255,255,255,0.4) 50%, transparent 51%);
+  opacity: 0.9;
+  animation: twinkle 7s ease-in-out infinite alternate;
+}
+
+@media (prefers-color-scheme: light) {
+  .sky::after { opacity: 0.18; }
+}
+
+@keyframes twinkle {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+
+.aurora {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  will-change: transform;
+}
+
+.aurora-1 {
+  width: 65vmax; height: 65vmax;
+  left: -22vmax; top: -18vmax;
+  background: var(--aurora-1);
+  animation: drift1 26s ease-in-out infinite alternate;
+}
+
+.aurora-2 {
+  width: 55vmax; height: 55vmax;
+  right: -20vmax; top: 12vmax;
+  background: var(--aurora-2);
+  animation: drift2 32s ease-in-out infinite alternate;
+}
+
+.aurora-3 {
+  width: 50vmax; height: 50vmax;
+  left: 8vmax; bottom: -24vmax;
+  background: var(--aurora-3);
+  animation: drift3 38s ease-in-out infinite alternate;
+}
+
+@keyframes drift1 { to { transform: translate(9vmax, 7vmax) scale(1.15); } }
+@keyframes drift2 { to { transform: translate(-8vmax, 9vmax) scale(0.9); } }
+@keyframes drift3 { to { transform: translate(7vmax, -8vmax) scale(1.1); } }
+
+/* ---- Liquid Glass materials ----------------------------------- */
+
+.glass,
+.glass-strong {
+  position: relative;
+  background: var(--glass-fill);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  backdrop-filter: blur(22px) saturate(170%);
+  border: 1px solid var(--glass-stroke);
+  box-shadow:
+    var(--glass-shadow),
+    inset 0 1px 0 var(--glass-specular),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  border-radius: 28px;
+}
+
+.glass-strong {
+  background: var(--glass-fill-strong);
+  -webkit-backdrop-filter: blur(34px) saturate(190%);
+  backdrop-filter: blur(34px) saturate(190%);
+}
+
+/* top-left sheen that makes flat glass read as curved */
+.glass::before,
+.glass-strong::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(120% 70% at 18% 0%, rgba(255, 255, 255, 0.16), transparent 55%);
+}
+
+@media (prefers-color-scheme: light) {
+  .glass::before,
+  .glass-strong::before {
+    background: radial-gradient(120% 70% at 18% 0%, rgba(255, 255, 255, 0.65), transparent 60%);
+  }
+}
+
+/* System "Reduce Transparency" — swap glass for solid materials */
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-strong {
+    background: var(--glass-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .glass::before,
+  .glass-strong::before { display: none; }
+}
+
+/* System "Reduce Motion" — freeze ambient animation */
+@media (prefers-reduced-motion: reduce) {
+  .sky::after,
+  .aurora,
+  .breathe-orb,
+  .pulse-dot { animation: none !important; }
+  * { transition-duration: 0.01ms !important; }
+}
+
+/* ---- controls -------------------------------------------------- */
+
+/* In @layer base so Tailwind's utility layer (padding, etc.) wins on buttons. */
+@layer base {
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.pressable {
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
+}
+
+.pressable:active {
+  transform: scale(0.94);
+}
+
+/* glass range slider */
+input[type="range"].glass-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 30px;
+  background: transparent;
+}
+
+input[type="range"].glass-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--fill, 50%),
+    rgba(128, 138, 180, 0.28) var(--fill, 50%)
+  );
+}
+
+input[type="range"].glass-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.95), rgba(220, 226, 255, 0.85));
+  border: 0.5px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.9);
+}
+
+input[type="range"].glass-slider::-moz-range-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(128, 138, 180, 0.28);
+}
+
+input[type="range"].glass-slider::-moz-range-progress {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--accent);
+}
+
+input[type="range"].glass-slider::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* ---- breathing orb --------------------------------------------- */
+
+.breathe-orb {
+  will-change: transform;
+  transition: transform 1s ease-in-out;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.pulse-dot { animation: pulse 1.6s ease-in-out infinite; }
+
+/* ---- motion helpers --------------------------------------------- */
+
+@keyframes sheet-in {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.sheet-enter { animation: sheet-in 0.42s cubic-bezier(0.32, 0.72, 0, 1); }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fade-enter { animation: fade-in 0.3s ease; }
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.rise-enter { animation: rise-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* hide scrollbars in horizontal chip rows */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* safe-area helpers (iPhone 16 Pro Dynamic Island + home indicator) */
+.safe-top { padding-top: max(env(safe-area-inset-top), 16px); }
+.safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 12px); }
