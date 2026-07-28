@@ -279,77 +279,189 @@ export class AudioEngine {
   }
 
   private buildRain(ctx: AudioContext, out: GainNode): Cleanup {
-    // Body: dense wash of lowpassed white noise
-    const body = this.noiseSource(ctx, "white");
+    // Heavy rain, layered the way real rain is built up: a broadband wash
+    // whose spectrum is pink (rain = millions of merging droplets), a deep
+    // body for weight, an airy top for hiss, dense stochastic surface
+    // impacts, and sparse physically-modelled near drips — all fed into a
+    // short dark reverb so it sits in a space instead of sounding dry.
+    const { input: wet, cleanup: spaceCleanup } = this.makeSpace(ctx, out, 0.13, 0.22);
+    const lfos: OscillatorNode[] = [];
+    const statics: AudioNode[] = [];
+
+    // 1. Main wash — pink noise, band-limited. A slow LFO sweeps the lowpass
+    //    cutoff so the downpour rises and falls in natural "waves". This
+    //    movement is what separates rain from flat static.
+    const wash = this.noiseSource(ctx, "pink");
+    const washHp = ctx.createBiquadFilter();
+    washHp.type = "highpass";
+    washHp.frequency.value = 340;
+    const washLp = ctx.createBiquadFilter();
+    washLp.type = "lowpass";
+    washLp.frequency.value = 3600;
+    lfos.push(AudioEngine.lfo(ctx, 0.08, 1300, washLp.frequency));
+    const washGain = ctx.createGain();
+    washGain.gain.value = 0.32;
+    lfos.push(AudioEngine.lfo(ctx, 0.13, 0.06, washGain.gain));
+    wash.connect(washHp); washHp.connect(washLp); washLp.connect(washGain); washGain.connect(wet);
+    statics.push(wash, washHp, washLp, washGain);
+
+    // 2. Deep body — heavy rain on the ground, lowpassed for weight, gusting
+    //    on its own slow LFO (incommensurate rate keeps it organic).
+    const body = this.noiseSource(ctx, "brown");
     const bodyLp = ctx.createBiquadFilter();
     bodyLp.type = "lowpass";
-    bodyLp.frequency.value = 1500;
+    bodyLp.frequency.value = 1400;
     const bodyGain = ctx.createGain();
-    bodyGain.gain.value = 0.4;
-    body.connect(bodyLp); bodyLp.connect(bodyGain); bodyGain.connect(out);
+    bodyGain.gain.value = 0.55;
+    lfos.push(AudioEngine.lfo(ctx, 0.09, 0.1, bodyGain.gain));
+    body.connect(bodyLp); bodyLp.connect(bodyGain); bodyGain.connect(wet);
+    statics.push(body, bodyLp, bodyGain);
 
-    // Patter: high shimmer with a slow random flutter
-    const patter = this.noiseSource(ctx, "white");
-    const patterBp = ctx.createBiquadFilter();
-    patterBp.type = "bandpass";
-    patterBp.frequency.value = 4800;
-    patterBp.Q.value = 0.6;
-    const patterGain = ctx.createGain();
-    patterGain.gain.value = 0.12;
-    const flutter = AudioEngine.lfo(ctx, 0.4, 0.05, patterGain.gain);
-    patter.connect(patterBp); patterBp.connect(patterGain); patterGain.connect(out);
+    // 3. Airy shimmer — the high hiss of rain, drifting on a third slow LFO.
+    const air = this.noiseSource(ctx, "white");
+    const airBp = ctx.createBiquadFilter();
+    airBp.type = "bandpass";
+    airBp.frequency.value = 5200;
+    airBp.Q.value = 0.7;
+    const airGain = ctx.createGain();
+    airGain.gain.value = 0.03;
+    lfos.push(AudioEngine.lfo(ctx, 0.19, 0.02, airGain.gain));
+    air.connect(airBp); airBp.connect(airGain); airGain.connect(wet);
+    statics.push(air, airBp, airGain);
 
-    // Occasional close droplets
     let alive = true;
-    const drop = () => {
+    const timers: number[] = [];
+
+    // 4. Surface impacts — dense short noise bursts (the "sizzle" of drops
+    //    striking surfaces). Broadband, low Q, panned across the field.
+    const tick = () => {
+      if (!alive) return;
+      const t = ctx.currentTime;
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuffer(ctx, "white");
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = 1400 + Math.random() * 1900;
+      bp.Q.value = 1.2 + Math.random() * 2;
+      const g = ctx.createGain();
+      const dur = 0.008 + Math.random() * 0.018;
+      const level = 0.018 + Math.random() * 0.04;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(level, t + 0.001);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      const pan = ctx.createStereoPanner();
+      pan.pan.value = Math.random() * 1.5 - 0.75;
+      src.connect(bp); bp.connect(g); g.connect(pan); pan.connect(wet);
+      src.start(t, Math.random() * 3);
+      src.stop(t + dur + 0.05);
+      timers.push(window.setTimeout(() => { bp.disconnect(); g.disconnect(); pan.disconnect(); }, (dur + 0.1) * 1000));
+      timers.push(window.setTimeout(tick, 22 + Math.random() * 70));
+    };
+    timers.push(window.setTimeout(tick, 40));
+
+    // 5. Occasional near drip — physically-modelled water drop: a sine whose
+    //    pitch RISES as the bubble collapses (van den Doel's model), very
+    //    short. Sparse and quiet so heavy rain never sounds synthetic.
+    const drip = () => {
       if (!alive) return;
       const t = ctx.currentTime;
       const osc = ctx.createOscillator();
       osc.type = "sine";
-      const f = 900 + Math.random() * 1800;
-      osc.frequency.setValueAtTime(f, t);
-      osc.frequency.exponentialRampToValueAtTime(f * 0.55, t + 0.08);
+      const f0 = 600 + Math.random() * 1400;
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.exponentialRampToValueAtTime(f0 * (1.4 + Math.random() * 0.8), t + 0.05);
       const g = ctx.createGain();
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.02 + Math.random() * 0.03, t + 0.005);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
-      osc.connect(g); g.connect(out);
-      osc.start(t); osc.stop(t + 0.12);
-      timers.push(window.setTimeout(drop, 250 + Math.random() * 900));
+      g.gain.exponentialRampToValueAtTime(0.025 + Math.random() * 0.03, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+      const pan = ctx.createStereoPanner();
+      pan.pan.value = Math.random() * 1.2 - 0.6;
+      osc.connect(g); g.connect(pan); pan.connect(wet);
+      osc.start(t); osc.stop(t + 0.08);
+      timers.push(window.setTimeout(() => { g.disconnect(); pan.disconnect(); }, 120));
+      timers.push(window.setTimeout(drip, 550 + Math.random() * 2000));
     };
-    const timers: number[] = [window.setTimeout(drop, 400)];
+    timers.push(window.setTimeout(drip, 700));
 
     return () => {
       alive = false;
       timers.forEach(clearTimeout);
-      body.stop(); patter.stop(); flutter.stop();
-      [body, bodyLp, bodyGain, patter, patterBp, patterGain].forEach((n) => n.disconnect());
+      lfos.forEach((o) => o.stop());
+      [wash, body, air].forEach((n) => n.stop());
+      statics.forEach((n) => n.disconnect());
+      spaceCleanup();
     };
   }
 
   private buildThunder(ctx: AudioContext, out: GainNode): Cleanup {
+    // Long, dark reverb send places each strike in the open sky.
+    const { input: wet, cleanup: spaceCleanup } = this.makeSpace(ctx, out, 0.28, 0.5);
     let alive = true;
     const timers: number[] = [];
-    const rumble = () => {
+    const strike = () => {
       if (!alive) return;
-      const t = ctx.currentTime;
-      const src = this.noiseSource(ctx, "brown");
-      const lp = ctx.createBiquadFilter();
-      lp.type = "lowpass";
-      lp.frequency.setValueAtTime(140, t);
-      lp.frequency.exponentialRampToValueAtTime(50, t + 3);
-      const g = ctx.createGain();
-      const peak = 0.5 + Math.random() * 0.5;
-      const decay = 3 + Math.random() * 4;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(peak, t + 0.25 + Math.random() * 0.4);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
-      src.connect(lp); lp.connect(g); g.connect(out);
-      timers.push(window.setTimeout(() => { src.stop(); src.disconnect(); lp.disconnect(); g.disconnect(); }, (decay + 0.5) * 1000));
-      timers.push(window.setTimeout(rumble, 8000 + Math.random() * 16000));
+      const t0 = ctx.currentTime;
+      const distant = Math.random() < 0.45;
+
+      if (!distant) {
+        // Crack — broadband "tear" whose highpass sweeps down fast, plus a
+        // sub-bass thump for the chest-hit body of a close strike.
+        const crack = this.noiseSource(ctx, "white");
+        const cf = ctx.createBiquadFilter();
+        cf.type = "highpass";
+        cf.frequency.setValueAtTime(400, t0);
+        cf.frequency.exponentialRampToValueAtTime(70, t0 + 0.5);
+        const cg = ctx.createGain();
+        cg.gain.setValueAtTime(0.0001, t0);
+        cg.gain.exponentialRampToValueAtTime(0.6, t0 + 0.012);
+        cg.gain.exponentialRampToValueAtTime(0.04, t0 + 0.4);
+        cg.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.0);
+        crack.connect(cf); cf.connect(cg); cg.connect(wet);
+
+        const sub = ctx.createOscillator();
+        sub.type = "sine";
+        sub.frequency.setValueAtTime(58, t0);
+        sub.frequency.exponentialRampToValueAtTime(32, t0 + 0.7);
+        const sg = ctx.createGain();
+        sg.gain.setValueAtTime(0.0001, t0);
+        sg.gain.exponentialRampToValueAtTime(0.5, t0 + 0.03);
+        sg.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.1);
+        sub.connect(sg); sg.connect(out); // dry: reverb would muddy the sub
+        sub.start(t0); sub.stop(t0 + 1.2);
+
+        timers.push(window.setTimeout(() => {
+          crack.stop(); sub.stop();
+          [crack, cf, cg, sub, sg].forEach((n) => n.disconnect());
+        }, 1300));
+      }
+
+      // Rolling rumble — overlapping low swells at staggered delays; thunder
+      // "rolls" as sound arrives from along the length of the bolt. A slow
+      // tremolo makes each swell boil rather than sit static.
+      const rolls = distant ? 2 : 4;
+      for (let i = 0; i < rolls; i++) {
+        const t = t0 + (distant ? 0 : 0.1) + i * (0.25 + Math.random() * 0.75);
+        const src = this.noiseSource(ctx, "brown");
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.setValueAtTime(distant ? 85 : 170, t);
+        lp.frequency.exponentialRampToValueAtTime(35, t + 4);
+        const g = ctx.createGain();
+        const peak = (distant ? 0.22 : 0.5) * (0.6 + Math.random() * 0.5);
+        const decay = 3 + Math.random() * 4.5;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(peak, t + 0.2 + Math.random() * 0.6);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+        const tremolo = AudioEngine.lfo(ctx, 1.5 + Math.random() * 4, peak * 0.35, g.gain);
+        src.connect(lp); lp.connect(g); g.connect(wet);
+        const life = (i * 1.0 + decay + 1) * 1000;
+        timers.push(window.setTimeout(() => { src.stop(); tremolo.stop(); src.disconnect(); lp.disconnect(); g.disconnect(); }, life));
+      }
+
+      timers.push(window.setTimeout(strike, 6000 + Math.random() * 16000));
     };
-    timers.push(window.setTimeout(rumble, 1500));
-    return () => { alive = false; timers.forEach(clearTimeout); };
+    timers.push(window.setTimeout(strike, 1200));
+    return () => { alive = false; timers.forEach(clearTimeout); spaceCleanup(); };
   }
 
   private buildOcean(ctx: AudioContext, out: GainNode): Cleanup {
@@ -768,6 +880,12 @@ export class AudioEngine {
 // Singleton — the engine must survive across screen/tab switches.
 let engine: AudioEngine | null = null;
 export function getEngine(): AudioEngine {
-  if (!engine) engine = new AudioEngine();
+  if (!engine) {
+    engine = new AudioEngine();
+    // Dev-only handle so audio output can be measured during verification.
+    if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
+      (window as unknown as { __nocturneEngine?: AudioEngine }).__nocturneEngine = engine;
+    }
+  }
   return engine;
 }
