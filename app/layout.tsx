@@ -1,15 +1,35 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Sentinel - AI Security Scanner",
-  description: "12 AI agents scanning your website for vulnerabilities in parallel",
+  title: "Nocturne — Sleep Sounds & Relaxation",
+  description:
+    "Mix endless generated soundscapes, set a fading sleep timer, plan sleep cycles and breathe your way to rest.",
+  applicationName: "Nocturne",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Nocturne",
+  },
+  formatDetection: { telephone: false },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#05070f" },
+    { media: "(prefers-color-scheme: light)", color: "#dfe3f5" },
+  ],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body style={{ margin: 0, padding: 0 }}>{children}</body>
+      <body>{children}</body>
     </html>
   );
 }
