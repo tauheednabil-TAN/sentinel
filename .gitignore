@@ -5,3 +5,6 @@ node_modules/
 
 # TypeScript build cache
 tsconfig.tsbuildinfo
+
+# Next.js generated (regenerated on each build/dev; do not track)
+next-env.d.ts
