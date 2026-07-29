@@ -84,6 +84,13 @@ export const PRESETS: Preset[] = [
     hues: [215, 25],
   },
   {
+    id: "thunderstorm",
+    name: "Thunderstorm",
+    tagline: "Heavy rain, rolling thunder & gusting wind",
+    sounds: { rain: 0.7, thunder: 0.55, wind: 0.4 },
+    hues: [225, 265],
+  },
+  {
     id: "ocean-night",
     name: "Ocean Night",
     tagline: "Waves rolling under a starry sky",
