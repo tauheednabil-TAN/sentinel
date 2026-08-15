@@ -5,12 +5,30 @@ export const maxDuration = 300; // seconds — max for Hobby w/ Fluid Compute
 // =====================================================================
 // TYPES
 // =====================================================================
+type Severity = "critical" | "high" | "medium" | "low" | "info";
+
 type PathProbeResult = {
   path: string;
   status: number;
   contentType: string;
   snippet: string;
   exposed: boolean;
+  // Why we decided this — surfaced to the agent so it reasons over evidence,
+  // not raw status codes.
+  confidence: "confirmed" | "none";
+  evidence: string;
+  severityHint: Severity;
+};
+
+// Result of hitting deliberately-random paths to learn how the server behaves
+// for URLs that definitely do not exist (soft-404 / SPA catch-all detection).
+type CalibrationResult = {
+  catchAll: boolean; // does the site return 200 for garbage paths?
+  baselineStatus: number;
+  baselineLen: number;
+  baselineContentType: string;
+  baselineNorm: string; // normalized body prefix for similarity comparison
+  samples: number;
 };
 
 type ScriptScanResult = {
@@ -41,6 +59,7 @@ type TargetContext = {
   techFingerprints: TechFingerprint[];
   formsDetected: number;
   hasLoginForm: boolean;
+  calibration: CalibrationResult | null;
 };
 
 // =====================================================================
@@ -125,6 +144,7 @@ async function fetchTarget(url: string): Promise<TargetContext> {
     techFingerprints: [],
     formsDetected: 0,
     hasLoginForm: false,
+    calibration: null,
   };
 
   let fullHtml = "";
@@ -253,18 +273,200 @@ const SENSITIVE_PATHS = [
   "/.svn/entries",
 ];
 
-function looksLikeErrorPage(body: string): boolean {
-  const lower = body.toLowerCase();
-  return (
-    lower.includes("not found") ||
-    lower.includes("404") ||
-    lower.includes("page not found") ||
-    lower.includes("does not exist") ||
-    body.length > 15000
-  );
+// ---- Soft-404 / catch-all calibration --------------------------------------
+// The core reason old scans lied: many hosts (SPAs, static hosts, custom 404s)
+// return HTTP 200 with their normal HTML for EVERY url — including /.env. So a
+// 200 proves nothing. We first fetch random non-existent paths to learn the
+// server's "this does not exist" response, then compare every real probe to it.
+const randToken = () => Math.random().toString(36).slice(2, 12);
+
+function normalizeBody(body: string): string {
+  return body.replace(/\s+/g, " ").trim().toLowerCase().slice(0, 2000);
 }
 
-async function probeSensitivePaths(baseUrl: string): Promise<PathProbeResult[]> {
+function isHtmlBody(contentType: string, body: string): boolean {
+  return /text\/html/i.test(contentType) || /^\s*(<!doctype html|<html[\s>])/i.test(body);
+}
+
+async function calibrate(origin: string): Promise<CalibrationResult> {
+  const randomPaths = [`/${randToken()}`, `/${randToken()}/${randToken()}.${randToken().slice(0, 3)}`];
+  const samples = await Promise.all(
+    randomPaths.map(async (rp) => {
+      try {
+        const res = await fetchWithTimeout(`${origin}${rp}`, PROBE_TIMEOUT_MS, { redirect: "follow" });
+        const body = res.ok ? await res.text() : "";
+        return { status: res.status, len: body.length, contentType: res.headers.get("content-type") || "", norm: normalizeBody(body) };
+      } catch {
+        return { status: 0, len: 0, contentType: "", norm: "" };
+      }
+    })
+  );
+  const twoHundreds = samples.filter((s) => s.status === 200);
+  const base = twoHundreds[0] || samples[0];
+  return {
+    catchAll: twoHundreds.length > 0,
+    baselineStatus: base.status,
+    baselineLen: base.len,
+    baselineContentType: base.contentType,
+    baselineNorm: base.norm,
+    samples: samples.length,
+  };
+}
+
+// True when a probed body is really just the site's catch-all page.
+function looksLikeBaseline(body: string, calib: CalibrationResult): boolean {
+  if (!calib.catchAll) return false;
+  const norm = normalizeBody(body);
+  const lenClose = calib.baselineLen > 0 && Math.abs(body.length - calib.baselineLen) <= Math.max(40, calib.baselineLen * 0.15);
+  const sameStart = calib.baselineNorm.length > 40 && norm.slice(0, 200) === calib.baselineNorm.slice(0, 200);
+  return lenClose && (sameStart || calib.baselineNorm.length <= 40);
+}
+
+// ---- Per-file content signatures --------------------------------------------
+// A path is only "exposed" if its BODY actually matches that file's real format.
+// This is the heart of "read what you got and decide if it is really a threat".
+type SigResult = { matched: boolean; evidence: string; severity: Severity };
+
+function validateSignature(path: string, contentType: string, body: string): SigResult {
+  const p = path.toLowerCase();
+  const html = isHtmlBody(contentType, body);
+  const t = body.trim();
+  const notFile = (what: string): SigResult => ({ matched: false, evidence: `HTTP 200 but the body is not ${what} (looks like the site's normal page / soft-404)`, severity: "info" });
+
+  // .env family — must contain KEY=VALUE lines and not be HTML
+  if (/\.env/.test(p)) {
+    const envLines = body.match(/^[A-Z][A-Z0-9_]*\s*=.+$/gim) || [];
+    if (!html && envLines.length >= 1) {
+      const secretish = /(SECRET|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|TOKEN|PRIVATE|DB_|DATABASE_URL|AWS)/i.test(body);
+      return { matched: true, evidence: `real .env file — ${envLines.length} KEY=VALUE line(s)${secretish ? " including secret-like keys" : ""}`, severity: secretish ? "critical" : "high" };
+    }
+    return notFile("a .env file");
+  }
+  // .git/HEAD
+  if (/\.git\/head/.test(p)) {
+    if (!html && (/^ref:\s*refs\//im.test(t) || /^[0-9a-f]{40}$/im.test(t))) {
+      return { matched: true, evidence: "valid Git HEAD ref — the .git repository is downloadable", severity: "high" };
+    }
+    return notFile("a Git HEAD file ('ref: refs/...')");
+  }
+  // .git/config
+  if (/\.git\/config/.test(p)) {
+    if (!html && /\[core\]/i.test(body) && /repositoryformatversion/i.test(body)) {
+      return { matched: true, evidence: "valid .git/config — source repository is exposed", severity: "high" };
+    }
+    return notFile("a .git/config file");
+  }
+  // .svn/entries
+  if (/\.svn\/entries/.test(p)) {
+    if (!html && (/^\d+\s*$/m.test((t.split("\n")[0] || "")) || /\bdir\b/.test(t))) {
+      return { matched: true, evidence: "SVN metadata exposed", severity: "medium" };
+    }
+    return notFile("an SVN entries file");
+  }
+  // SQL dumps
+  if (/\.sql$/.test(p)) {
+    if (/\b(CREATE TABLE|INSERT INTO|DROP TABLE|ALTER TABLE|MySQL dump|PostgreSQL database dump|mysqldump)\b/i.test(body)) {
+      return { matched: true, evidence: "database dump — SQL statements present in body", severity: "critical" };
+    }
+    return notFile("a SQL dump (no CREATE/INSERT statements)");
+  }
+  // PHP config backups
+  if (/config\.php|wp-config/.test(p)) {
+    if (/<\?php/i.test(body) && /(define\s*\(|DB_PASSWORD|DB_USER|password)/i.test(body)) {
+      return { matched: true, evidence: "PHP config source with credentials returned as plain text", severity: "critical" };
+    }
+    return notFile("a PHP config backup");
+  }
+  // .htaccess
+  if (/\.htaccess/.test(p)) {
+    if (!html && /(RewriteEngine|RewriteRule|Order\s+(allow|deny)|<Files|AuthType|Require\s)/i.test(body)) {
+      return { matched: true, evidence: "Apache .htaccess directives exposed", severity: "medium" };
+    }
+    return notFile("an .htaccess file");
+  }
+  // Apache server-status
+  if (/server-status/.test(p)) {
+    if (/Apache Server Status|Server uptime|Total accesses/i.test(body)) {
+      return { matched: true, evidence: "Apache server-status page exposed (live request data)", severity: "medium" };
+    }
+    return notFile("the Apache server-status page");
+  }
+  // phpinfo
+  if (/phpinfo/.test(p)) {
+    if (/phpinfo\(\)/i.test(body) || (/PHP Version/i.test(body) && /(Zend|Configure Command|php\.ini)/i.test(body))) {
+      return { matched: true, evidence: "phpinfo() output exposed (full PHP + server environment)", severity: "high" };
+    }
+    return notFile("phpinfo() output");
+  }
+  // web.config
+  if (/web\.config/.test(p)) {
+    if (/<configuration>|<system\.web|<connectionStrings/i.test(body)) {
+      return { matched: true, evidence: "web.config exposed (may contain connection strings)", severity: "high" };
+    }
+    return notFile("a web.config file");
+  }
+  // crossdomain.xml — only a finding if it wildcards access
+  if (/crossdomain\.xml/.test(p)) {
+    if (/<cross-domain-policy/i.test(body)) {
+      const wildcard = /<allow-access-from\s+domain=["']\*["']/i.test(body);
+      return wildcard
+        ? { matched: true, evidence: "crossdomain.xml allows access from any domain (*)", severity: "medium" }
+        : { matched: false, evidence: "crossdomain.xml present but restrictive — not a finding", severity: "info" };
+    }
+    return notFile("a crossdomain policy file");
+  }
+  // security.txt — its PRESENCE is good practice, not a vulnerability
+  if (/security\.txt/.test(p)) {
+    if (/^\s*Contact\s*:/im.test(body)) {
+      return { matched: true, evidence: "security.txt present — this is GOOD practice, informational only", severity: "info" };
+    }
+    return { matched: false, evidence: "no valid security.txt", severity: "info" };
+  }
+  // swagger / openapi docs
+  if (/swagger|openapi/.test(p)) {
+    try {
+      const j = JSON.parse(t);
+      if (j && (j.swagger || j.openapi || j.paths)) {
+        return { matched: true, evidence: "API documentation (Swagger/OpenAPI) is publicly readable", severity: "medium" };
+      }
+    } catch {
+      /* not JSON */
+    }
+    return notFile("a valid Swagger/OpenAPI document");
+  }
+  // .DS_Store — binary metadata, never HTML
+  if (/\.ds_store/.test(p)) {
+    if (!html && (body.includes(" ") || /Bud1/.test(body))) {
+      return { matched: true, evidence: ".DS_Store binary exposed (leaks directory/file names)", severity: "low" };
+    }
+    return notFile("a .DS_Store binary");
+  }
+  // ASP.NET diagnostics
+  if (/elmah\.axd|trace\.axd/.test(p)) {
+    if (/Error Log|Application Trace|ELMAH|Request Details/i.test(body)) {
+      return { matched: true, evidence: "ASP.NET diagnostic log exposed", severity: "high" };
+    }
+    return notFile("an ASP.NET diagnostic page");
+  }
+  // .dockerenv — typically empty; only meaningful if reachable and not HTML
+  if (/\.dockerenv/.test(p)) {
+    if (!html && t.length < 50) return { matched: true, evidence: ".dockerenv reachable (unusual server exposure)", severity: "low" };
+    return notFile("a .dockerenv marker");
+  }
+  // /debug catch — only if it returns non-HTML content
+  if (/\/debug$/.test(p)) {
+    if (!html && t.length > 0) return { matched: true, evidence: "debug endpoint returns non-HTML content", severity: "medium" };
+    return notFile("a debug output page");
+  }
+
+  // Fallback: unknown path type. Only flag if it returned real non-HTML content.
+  if (!html && t.length > 0) {
+    return { matched: true, evidence: "returned non-HTML content at a sensitive path", severity: "low" };
+  }
+  return notFile("a sensitive file");
+}
+
+async function probeSensitivePaths(baseUrl: string, calibration: CalibrationResult): Promise<PathProbeResult[]> {
   const origin = new URL(baseUrl).origin;
 
   // Fully parallel — all path probes fire at once for speed.
@@ -273,28 +475,33 @@ async function probeSensitivePaths(baseUrl: string): Promise<PathProbeResult[]> 
       try {
         const res = await fetchWithTimeout(`${origin}${path}`, PROBE_TIMEOUT_MS, { redirect: "follow" });
         const contentType = res.headers.get("content-type") || "";
-        let snippet = "";
-        let exposed = false;
 
-        if (res.ok) {
-          const body = await res.text();
-          if (contentType.includes("text/html")) {
-            if (looksLikeErrorPage(body)) {
-              snippet = "(HTML error/redirect page)";
-              exposed = false;
-            } else {
-              snippet = body.slice(0, 400);
-              exposed = true;
-            }
-          } else {
-            snippet = body.slice(0, 400);
-            exposed = true;
-          }
+        // Anything other than 200 is not an exposed file.
+        if (!res.ok) {
+          return { path, status: res.status, contentType, snippet: "", exposed: false, confidence: "none", evidence: `HTTP ${res.status} — not accessible`, severityHint: "info" };
         }
 
-        return { path, status: res.status, contentType, snippet, exposed };
+        const body = await res.text();
+
+        // Is this just the catch-all page the server returns for everything?
+        if (looksLikeBaseline(body, calibration)) {
+          return { path, status: res.status, contentType, snippet: "(matches soft-404 baseline)", exposed: false, confidence: "none", evidence: "Body is identical to the server's response for random non-existent paths — soft-404, NOT a real file", severityHint: "info" };
+        }
+
+        // Does the body actually match this file's real format?
+        const sig = validateSignature(path, contentType, body);
+        return {
+          path,
+          status: res.status,
+          contentType,
+          snippet: body.slice(0, 300).replace(/\s+/g, " ").trim(),
+          exposed: sig.matched,
+          confidence: sig.matched ? "confirmed" : "none",
+          evidence: sig.evidence,
+          severityHint: sig.severity,
+        };
       } catch {
-        return { path, status: 0, contentType: "", snippet: "(timeout/unreachable)", exposed: false };
+        return { path, status: 0, contentType: "", snippet: "(timeout/unreachable)", exposed: false, confidence: "none", evidence: "timeout/unreachable", severityHint: "info" };
       }
     })
   );
@@ -410,32 +617,50 @@ ${ctx.htmlSnippet || "(empty response body)"}
 --- END DATA ---`;
 }
 
+function formatCalibration(calib: CalibrationResult | null): string {
+  if (!calib) return "";
+  if (calib.catchAll) {
+    return `--- SOFT-404 CALIBRATION (READ THIS FIRST) ---
+Random, definitely-nonexistent paths were requested (${calib.samples} tested) and the server answered HTTP ${calib.baselineStatus} with a ${calib.baselineLen}-byte "${calib.baselineContentType}" page.
+=> This server returns 200 for URLs THAT DO NOT EXIST. A 200 status here proves NOTHING.
+=> Treat a path as exposed ONLY if its body genuinely contains that file's real contents. The probe results below already applied this rule.
+--- END CALIBRATION ---`;
+  }
+  return `--- SOFT-404 CALIBRATION ---
+Random nonexistent paths returned HTTP ${calib.baselineStatus} (not 200), so the server does distinguish real from missing paths. Still, confirm body content before reporting.
+--- END CALIBRATION ---`;
+}
+
 function formatPathProbes(probes: PathProbeResult[]): string {
   if (probes.length === 0) return "(no path probes run)";
   const exposed = probes.filter((p) => p.exposed);
-  const blocked = probes.filter((p) => !p.exposed && p.status > 0);
+  const rejected = probes.filter((p) => !p.exposed && p.status === 200);
+  const notFound = probes.filter((p) => !p.exposed && p.status > 0 && p.status !== 200);
   const unreachable = probes.filter((p) => p.status === 0);
 
-  let out = `--- ACTIVE PATH PROBE RESULTS ---
+  let out = `--- ACTIVE PATH PROBE RESULTS (content-validated) ---
 Paths probed: ${probes.length}
-EXPOSED (200 + real content): ${exposed.length}
-Blocked/Not Found: ${blocked.length}
+CONFIRMED exposed (body matched the real file format): ${exposed.length}
+Returned 200 but REJECTED (content did NOT match — soft-404 / normal page): ${rejected.length}
+Not found / blocked (non-200): ${notFound.length}
 Unreachable/Timeout: ${unreachable.length}
 
 `;
   if (exposed.length > 0) {
-    out += "EXPOSED PATHS (these are CONFIRMED findings):\n";
+    out += "CONFIRMED EXPOSED FILES (real findings — body was verified, use the suggested severity):\n";
     for (const p of exposed) {
       out += `  ${p.path} -> HTTP ${p.status} (${p.contentType})\n`;
-      if (p.snippet && p.snippet !== "(HTML error/redirect page)") {
-        out += `    preview: ${p.snippet.slice(0, 180).replace(/\s+/g, " ")}\n`;
-      }
+      out += `    suggested severity: ${p.severityHint}\n`;
+      out += `    evidence: ${p.evidence}\n`;
+      if (p.snippet) out += `    preview: ${p.snippet.slice(0, 180)}\n`;
     }
     out += "\n";
+  } else {
+    out += "No paths passed content validation. Report NO file-exposure findings.\n\n";
   }
-  if (blocked.length > 0) {
-    out += "BLOCKED/NOT FOUND (no issue):\n";
-    out += blocked.map((p) => `  ${p.path} -> HTTP ${p.status}`).join("\n") + "\n";
+  if (rejected.length > 0) {
+    out += "REJECTED — 200 status but NOT real files (DO NOT report these as findings):\n";
+    out += rejected.map((p) => `  ${p.path} -> ${p.evidence}`).join("\n") + "\n";
   }
   out += "--- END PATH PROBES ---";
   return out;
@@ -486,9 +711,10 @@ Scripts referencing source maps: ${withMaps.length}
 const ANALYSIS_RULES = `
 Rules:
 - ONLY report findings verifiable from the data provided above.
-- CONFIRMED evidence (exposed paths, matched secret patterns, identified versions) should be reported as real findings with appropriate severity.
+- A 200 HTTP status is NEVER by itself a vulnerability. Judge the actual CONTENT that was returned, not the status code.
+- CONFIRMED evidence (content-validated exposed paths, matched secret patterns, identified versions) should be reported as real findings with appropriate severity.
 - If a check needs deeper active testing not covered by the data, include it with severity "info" and description "Requires deeper testing — not verifiable from available data."
-- Do NOT hallucinate vulnerabilities that are not visible in the data.
+- Do NOT hallucinate vulnerabilities that are not visible in the data. When in doubt, lower the severity or omit the finding.
 - If nothing is found, return an empty findings array with a summary saying so.
 - Keep descriptions concise and actionable.
 `;
@@ -550,9 +776,11 @@ ${JSON_FORMAT}`,
 
 ${formatContext(ctx)}
 
+${formatCalibration(ctx.calibration)}
+
 ${formatPathProbes(ctx.pathProbes.filter((p) => p.path.includes("swagger") || p.path.includes("api")))}
 
-Based on the OBSERVED DATA and probe results: check for exposed API docs (swagger.json), API endpoints referenced in HTML/JS, CORS headers (is Access-Control-Allow-Origin wildcarded?), and API keys visible in HTML. Endpoint auth testing requires active probing.
+Based on the OBSERVED DATA and probe results: only report exposed API docs if listed under "CONFIRMED EXPOSED FILES" (a 200 alone is not enough). Also check for API endpoints referenced in HTML/JS, CORS headers (is Access-Control-Allow-Origin wildcarded?), and API keys visible in HTML. Endpoint auth testing requires active probing.
 ${ANALYSIS_RULES}
 ${JSON_FORMAT}`,
   },
@@ -613,17 +841,21 @@ ${JSON_FORMAT}`,
     name: "File Agent",
     emoji: "📁",
     description: "File exposure & path traversal",
-    prompt: (ctx: TargetContext) => `You are a file security expert with ACTIVE PROBE DATA — real results from fetching sensitive paths.
+    prompt: (ctx: TargetContext) => `You are a file security expert. You are given ACTIVE PROBE DATA that has ALREADY been content-validated — each path was fetched and its body checked against the real file format.
 
 ${formatContext(ctx)}
 
+${formatCalibration(ctx.calibration)}
+
 ${formatPathProbes(ctx.pathProbes)}
 
-Based on BOTH the page data AND the probe results:
-- Every EXPOSED path is a CONFIRMED finding. Severity: critical for .env / DB dumps / private keys; high for .git exposure; medium for config/server-status; low/info for security.txt/sitemap.
-- Use each exposed path's content preview to describe what is actually leaked.
-- BLOCKED/NOT FOUND paths are NOT findings.
-- Also check the HTML for file upload forms.
+CRITICAL RULES — follow exactly:
+- A 200 status code is NOT evidence of exposure. This server may return 200 for everything (see calibration).
+- Report a finding ONLY for paths listed under "CONFIRMED EXPOSED FILES". Use their stated evidence and suggested severity.
+- Everything under "REJECTED" is a soft-404 or the site's normal page — DO NOT report these, no matter how scary the path name (e.g. /.env, /backup.sql) looks.
+- If there are NO confirmed exposed files, return an empty findings array and state plainly that the site exposed no sensitive files.
+- Do NOT invent leaked contents — describe only what the evidence/preview actually shows.
+- Additionally, check the HTML for file upload forms (report as "info" attack surface if present).
 ${ANALYSIS_RULES}
 ${JSON_FORMAT}`,
   },
@@ -670,7 +902,10 @@ ${formatContext(ctx)}
 ${formatScriptScans(ctx.scriptScans)}
 
 Based on the page data AND the secret-scan results:
-- Any script/inline block with matched secret PATTERNS is a potential CONFIRMED finding — report it (severity high/critical for live keys, medium for JWTs that may be public). Advise the user to verify whether each match is a real secret vs a false positive.
+- A matched PATTERN is a lead, NOT an automatic finding. The label names the pattern that matched, not proof of a live secret.
+- High-confidence patterns (AWS Access Key ID, Stripe Live Secret Key, GitHub Token, Private Key) → report as high/critical, but tell the user to confirm the key is active.
+- Low-confidence / noisy patterns ("JWT", "Hardcoded credential-like assignment") are frequently false positives in minified JS (placeholders, public tokens, library defaults). Report these only as "info"/"low" and explicitly say they need manual verification. Do NOT call them critical.
+- If nothing was matched, do not invent leaks.
 - Source maps referenced in production are a low/medium finding (they can expose original source).
 - Also check headers/HTML for internal IPs, stack traces, debug output, verbose Server/X-Powered-By headers, and sensitive HTML comments.
 ${ANALYSIS_RULES}
@@ -753,8 +988,16 @@ export async function POST(req: NextRequest) {
 
       // ---- Step 2 & 3: active recon (only if reachable) ----
       if (!ctx.fetchError) {
+        const origin = new URL(ctx.finalUrl || validUrl).origin;
+
+        // Calibrate first: learn how the server responds to paths that don't
+        // exist, so a catch-all 200 can't masquerade as an exposed file.
+        send({ type: "calibrating", message: "Calibrating soft-404 behavior..." });
+        ctx.calibration = await calibrate(origin);
+        send({ type: "calibrated", catchAll: ctx.calibration.catchAll, baselineStatus: ctx.calibration.baselineStatus });
+
         send({ type: "probing", message: `Probing ${SENSITIVE_PATHS.length} sensitive paths...` });
-        ctx.pathProbes = await probeSensitivePaths(ctx.finalUrl || validUrl);
+        ctx.pathProbes = await probeSensitivePaths(ctx.finalUrl || validUrl, ctx.calibration);
         send({
           type: "probed",
           total: ctx.pathProbes.length,
