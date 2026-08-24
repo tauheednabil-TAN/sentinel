@@ -436,7 +436,7 @@ function validateSignature(path: string, contentType: string, body: string): Sig
   }
   // .DS_Store — binary metadata, never HTML
   if (/\.ds_store/.test(p)) {
-    if (!html && (body.includes(" ") || /Bud1/.test(body))) {
+    if (!html && (body.includes("\u0000") || /Bud1/.test(body))) {
       return { matched: true, evidence: ".DS_Store binary exposed (leaks directory/file names)", severity: "low" };
     }
     return notFile("a .DS_Store binary");
@@ -914,20 +914,25 @@ ${JSON_FORMAT}`,
 ];
 
 // =====================================================================
-// CEREBRAS CALL (with retry/backoff)
+// LLM CALL — Groq (OpenAI-compatible, generous free tier) with retry/backoff
 // =====================================================================
-async function callCerebras(prompt: string, attempt = 1): Promise<string> {
-  const apiKey = process.env.CEREBRAS_API_KEY;
-  if (!apiKey) throw new Error("CEREBRAS_API_KEY not set in environment");
+const LLM_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+const LLM_MODEL = "openai/gpt-oss-120b"; // same model family as before, hosted on Groq
 
-  const res = await fetch("https://api.cerebras.ai/v1/chat/completions", {
+async function callLLM(prompt: string, attempt = 1): Promise<string> {
+  // Prefer GROQ_API_KEY, but also accept the legacy CEREBRAS_API_KEY var name
+  // so the deployment env var doesn't strictly have to be renamed.
+  const apiKey = process.env.GROQ_API_KEY || process.env.CEREBRAS_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY not set in environment");
+
+  const res = await fetch(LLM_API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "gpt-oss-120b",
+      model: LLM_MODEL,
       messages: [{ role: "user", content: prompt }],
       max_tokens: 3000,
       reasoning_effort: "low",
@@ -938,12 +943,12 @@ async function callCerebras(prompt: string, attempt = 1): Promise<string> {
     const waitMs = 3000 * Math.pow(2, attempt - 1);
     console.log(`  429 rate-limited, waiting ${waitMs}ms then retrying (attempt ${attempt}/4)`);
     await sleep(waitMs);
-    return callCerebras(prompt, attempt + 1);
+    return callLLM(prompt, attempt + 1);
   }
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Cerebras API error ${res.status}: ${err.slice(0, 200)}`);
+    throw new Error(`LLM API error ${res.status}: ${err.slice(0, 200)}`);
   }
 
   const data = await res.json();
@@ -1025,7 +1030,7 @@ export async function POST(req: NextRequest) {
       const runAgent = async (agent: (typeof AGENTS)[number]) => {
         send({ type: "agent_start", agentId: agent.id, name: agent.name, emoji: agent.emoji });
         try {
-          const text = await callCerebras(agent.prompt(ctx));
+          const text = await callLLM(agent.prompt(ctx));
           let parsed: { findings?: unknown[]; summary?: string };
           try {
             const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
