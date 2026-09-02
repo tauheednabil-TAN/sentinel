@@ -719,236 +719,156 @@ Rules:
 - Keep descriptions concise and actionable.
 `;
 
-const JSON_FORMAT = `Respond ONLY in this exact JSON format (no markdown, no code fences, no extra text):
-{"findings":[{"title":"Short finding name","severity":"critical|high|medium|low|info","description":"Clear explanation grounded in the data","impact":"What an attacker could do","fix_steps":["Step 1","Step 2","Step 3"],"code_example":"config/code snippet or empty string","resources":["https://link.com"]}],"summary":"One sentence summary"}`;
-
 // =====================================================================
 // AGENTS
 // =====================================================================
 const AGENTS = [
   {
-    id: "recon",
-    name: "Recon Agent",
-    emoji: "🔍",
-    description: "Reconnaissance & attack surface",
-    prompt: (ctx: TargetContext) => `You are a cybersecurity reconnaissance expert.
-
-${formatContext(ctx)}
-
-${formatTechFingerprints(ctx.techFingerprints)}
-
-Based on the OBSERVED DATA, check for: tech stack fingerprinting, admin panel hints in HTML/robots.txt, sensitive paths disclosed in robots.txt, exposed directory listings, information leaked in the HTML.
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "recon", name: "Recon Agent", emoji: "🔍", description: "Reconnaissance & attack surface",
+    focus: "Reconnaissance & attack surface: tech-stack fingerprinting, admin-panel hints in HTML/robots.txt, sensitive paths disclosed in robots.txt, exposed directory listings, and information leaked in the HTML.",
   },
   {
-    id: "injection",
-    name: "Injection Agent",
-    emoji: "💉",
-    description: "SQL injection, XSS, SSTI",
-    prompt: (ctx: TargetContext) => `You are an injection vulnerability expert.
-
-${formatContext(ctx)}
-
-Based on the OBSERVED DATA: ${ctx.formsDetected} form(s) were detected. Injection testing requires active payload probing, which this passive scan does not perform. Report forms as an "info"-level attack surface note ("requires deeper testing"), and flag any obviously dangerous reflected input or inline eval-style JS visible in the HTML.
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "injection", name: "Injection Agent", emoji: "💉", description: "SQL injection, XSS, SSTI",
+    focus: "Injection (SQLi/XSS/SSTI): forms are attack surface only — report detected forms as an \"info\" note that active payload testing is required; flag any obviously dangerous reflected input or inline eval-style JS visible in the HTML.",
   },
   {
-    id: "auth",
-    name: "Auth Agent",
-    emoji: "🔐",
-    description: "Authentication & session security",
-    prompt: (ctx: TargetContext) => `You are an authentication security expert.
-
-${formatContext(ctx)}
-
-Based on the OBSERVED DATA: login form likely present = ${ctx.hasLoginForm}. Check: is any login form served over HTTPS, do password fields have autocomplete disabled, are OAuth/SSO hints present. Brute-force, MFA, and password-reset testing require active probing — mark those "info" with "requires deeper testing".
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "auth", name: "Auth Agent", emoji: "🔐", description: "Authentication & session security",
+    focus: "Authentication: is a login form served over HTTPS, do password fields disable autocomplete, are OAuth/SSO hints present. Brute-force, MFA and password-reset testing require active probing — mark those \"info\".",
   },
   {
-    id: "api",
-    name: "API Agent",
-    emoji: "⚡",
-    description: "API & endpoint security",
-    prompt: (ctx: TargetContext) => `You are an API security expert.
-
-${formatContext(ctx)}
-
-${formatCalibration(ctx.calibration)}
-
-${formatPathProbes(ctx.pathProbes.filter((p) => p.path.includes("swagger") || p.path.includes("api")))}
-
-Based on the OBSERVED DATA and probe results: only report exposed API docs if listed under "CONFIRMED EXPOSED FILES" (a 200 alone is not enough). Also check for API endpoints referenced in HTML/JS, CORS headers (is Access-Control-Allow-Origin wildcarded?), and API keys visible in HTML. Endpoint auth testing requires active probing.
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "api", name: "API Agent", emoji: "⚡", description: "API & endpoint security",
+    focus: "API security: report exposed API docs (e.g. swagger) ONLY if they appear under CONFIRMED EXPOSED FILES; check API endpoints referenced in HTML/JS, a wildcarded Access-Control-Allow-Origin, and API keys visible in the HTML.",
   },
   {
-    id: "ssl",
-    name: "SSL/TLS Agent",
-    emoji: "🔒",
-    description: "Certificate & encryption",
-    prompt: (ctx: TargetContext) => `You are an SSL/TLS security expert.
-
-${formatContext(ctx)}
-
-Based on the OBSERVED DATA: is the site HTTPS (${ctx.isHttps}), is Strict-Transport-Security present, is there mixed content in the HTML. Cert chain, cipher suites, and TLS versions require an active TLS handshake probe (not performed here) — mark those "info" with "requires deeper testing".
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "ssl", name: "SSL/TLS Agent", emoji: "🔒", description: "Certificate & encryption",
+    focus: "SSL/TLS: is the site HTTPS, is Strict-Transport-Security present, is there mixed content in the HTML. Cert chain, cipher suites and TLS versions need an active handshake — mark those \"info\".",
   },
   {
-    id: "headers",
-    name: "Headers Agent",
-    emoji: "🛡",
-    description: "Security headers & CSP",
-    prompt: (ctx: TargetContext) => `You are a security headers expert. Response headers are directly observable, so be specific.
-
-${formatContext(ctx)}
-
-Check EACH and report missing/weak: Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, Strict-Transport-Security, Access-Control-Allow-Origin (wildcard?), and server version disclosure in Server / X-Powered-By.
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "headers", name: "Headers Agent", emoji: "🛡", description: "Security headers & CSP",
+    focus: "Security headers (directly observable in the response — be specific): report each missing/weak Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, Strict-Transport-Security, a wildcard Access-Control-Allow-Origin, and version disclosure in Server / X-Powered-By.",
   },
   {
-    id: "session",
-    name: "Session Agent",
-    emoji: "🍪",
-    description: "Cookies & CSRF protection",
-    prompt: (ctx: TargetContext) => `You are a session security expert.
-
-${formatContext(ctx)}
-
-Check Set-Cookie headers for missing HttpOnly, Secure, SameSite flags. Check for session IDs in URLs and CSRF token hidden fields in forms. If no cookies were set on this passive request, note the limited view.
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "session", name: "Session Agent", emoji: "🍪", description: "Cookies & CSRF protection",
+    focus: "Sessions & CSRF: check Set-Cookie for missing HttpOnly/Secure/SameSite, session IDs in URLs, and CSRF token fields in forms. If no cookies were set on this passive request, note the limited view.",
   },
   {
-    id: "access",
-    name: "Access Control Agent",
-    emoji: "🚧",
-    description: "IDOR & privilege escalation",
-    prompt: (ctx: TargetContext) => `You are an access control security expert.
-
-${formatContext(ctx)}
-
-Check for predictable ID patterns in URLs/links and admin paths in robots.txt/HTML. IDOR and privilege-escalation testing require authenticated active probing — mark those "info" with "requires deeper testing".
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "access", name: "Access Control Agent", emoji: "🚧", description: "IDOR & privilege escalation",
+    focus: "Access control: predictable ID patterns in URLs/links and admin paths in robots.txt/HTML. IDOR and privilege-escalation testing require authenticated probing — mark those \"info\".",
   },
   {
-    id: "files",
-    name: "File Agent",
-    emoji: "📁",
-    description: "File exposure & path traversal",
-    prompt: (ctx: TargetContext) => `You are a file security expert. You are given ACTIVE PROBE DATA that has ALREADY been content-validated — each path was fetched and its body checked against the real file format.
-
-${formatContext(ctx)}
-
-${formatCalibration(ctx.calibration)}
-
-${formatPathProbes(ctx.pathProbes)}
-
-CRITICAL RULES — follow exactly:
-- A 200 status code is NOT evidence of exposure. This server may return 200 for everything (see calibration).
-- Report a finding ONLY for paths listed under "CONFIRMED EXPOSED FILES". Use their stated evidence and suggested severity.
-- Everything under "REJECTED" is a soft-404 or the site's normal page — DO NOT report these, no matter how scary the path name (e.g. /.env, /backup.sql) looks.
-- If there are NO confirmed exposed files, return an empty findings array and state plainly that the site exposed no sensitive files.
-- Do NOT invent leaked contents — describe only what the evidence/preview actually shows.
-- Additionally, check the HTML for file upload forms (report as "info" attack surface if present).
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "files", name: "File Agent", emoji: "📁", description: "File exposure & path traversal",
+    focus: "File exposure: report a finding ONLY for paths listed under CONFIRMED EXPOSED FILES (already content-validated) using their stated evidence and severity. Everything under REJECTED is a soft-404 / normal page — NEVER report it, no matter how scary the path name (/.env, /backup.sql) looks. Also flag any file upload form in the HTML as \"info\".",
   },
   {
-    id: "logic",
-    name: "Logic Agent",
-    emoji: "🧠",
-    description: "Business logic & client-side trust",
-    prompt: (ctx: TargetContext) => `You are a business logic security expert.
-
-${formatContext(ctx)}
-
-Full business-logic testing (race conditions, workflow bypass, price manipulation) requires interactive, authenticated, multi-step testing with a real browser — this scan does not perform that. Report ONE honest "info" finding stating business-logic testing requires deeper manual/active assessment. ADDITIONALLY, if the HTML clearly shows client-side-only validation of sensitive values (e.g. prices, discounts, roles, or coupon codes hardcoded in JS/HTML), report that as a real finding, since client-side-only trust is verifiable from the source.
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "logic", name: "Logic Agent", emoji: "🧠", description: "Business logic & client-side trust",
+    focus: "Business logic: report ONE \"info\" finding that logic testing (race conditions, workflow/price bypass) requires manual, authenticated, multi-step testing. ADDITIONALLY, if the HTML shows client-side-only validation of sensitive values (prices, discounts, roles, coupons hardcoded in JS/HTML), report that as a real finding.",
   },
   {
-    id: "cve",
-    name: "CVE Agent",
-    emoji: "⚠️",
-    description: "Known vulnerabilities & outdated libs",
-    prompt: (ctx: TargetContext) => `You are a CVE and dependency expert with real fingerprint data.
-
-${formatContext(ctx)}
-
-${formatTechFingerprints(ctx.techFingerprints)}
-
-Based on the identified technologies and versions above:
-- For any component with a KNOWN version, describe the classes of CVEs that historically affect that version range and whether it is likely end-of-life or outdated. Reference the CVE class, not a fabricated specific CVE ID unless you are certain.
-- For components with UNKNOWN version, recommend confirming the version and note that version disclosure itself (e.g. in Server header) aids attackers.
-- Do NOT invent CVE numbers. If unsure of a specific ID, describe the vulnerability class instead.
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "cve", name: "CVE Agent", emoji: "⚠️", description: "Known vulnerabilities & outdated libs",
+    focus: "CVEs & outdated components: for any identified technology + version, describe the CLASSES of CVEs that affect that version range and whether it is likely end-of-life — NEVER fabricate specific CVE IDs. For unknown versions, recommend confirming them and note that version disclosure itself aids attackers.",
   },
   {
-    id: "disclosure",
-    name: "Disclosure Agent",
-    emoji: "🕵️",
-    description: "Information leakage & secrets",
-    prompt: (ctx: TargetContext) => `You are an information disclosure expert with ACTIVE JS-SCAN DATA.
-
-${formatContext(ctx)}
-
-${formatScriptScans(ctx.scriptScans)}
-
-Based on the page data AND the secret-scan results:
-- A matched PATTERN is a lead, NOT an automatic finding. The label names the pattern that matched, not proof of a live secret.
-- High-confidence patterns (AWS Access Key ID, Stripe Live Secret Key, GitHub Token, Private Key) → report as high/critical, but tell the user to confirm the key is active.
-- Low-confidence / noisy patterns ("JWT", "Hardcoded credential-like assignment") are frequently false positives in minified JS (placeholders, public tokens, library defaults). Report these only as "info"/"low" and explicitly say they need manual verification. Do NOT call them critical.
-- If nothing was matched, do not invent leaks.
-- Source maps referenced in production are a low/medium finding (they can expose original source).
-- Also check headers/HTML for internal IPs, stack traces, debug output, verbose Server/X-Powered-By headers, and sensitive HTML comments.
-${ANALYSIS_RULES}
-${JSON_FORMAT}`,
+    id: "disclosure", name: "Disclosure Agent", emoji: "🕵️", description: "Information leakage & secrets",
+    focus: "Information disclosure: a matched secret PATTERN is a lead, not proof. High-confidence patterns (AWS/Stripe/GitHub token, private key) → high/critical but say to verify the key is live; noisy ones (JWT, generic credential-like assignment) → \"info\"/\"low\", need manual check. Source maps → low/medium. Also flag internal IPs, stack traces, debug output, verbose Server/X-Powered-By headers, and sensitive HTML comments.",
   },
 ];
 
-// =====================================================================
-// LLM CALL — Groq (OpenAI-compatible, generous free tier) with retry/backoff
-// =====================================================================
-const LLM_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-const LLM_MODEL = "openai/gpt-oss-120b"; // same model family as before, hosted on Groq
+type Agent = (typeof AGENTS)[number];
 
-async function callLLM(prompt: string, attempt = 1): Promise<string> {
-  // Prefer GROQ_API_KEY, but also accept the legacy CEREBRAS_API_KEY var name
-  // so the deployment env var doesn't strictly have to be renamed.
-  const apiKey = process.env.GROQ_API_KEY || process.env.CEREBRAS_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY not set in environment");
+// One prompt that asks the model to assess several areas at once and tag each
+// finding with its area id. This replaces 12 separate LLM calls with a few
+// combined ones, which fits free-tier token/request limits and is far faster.
+const TEAM_JSON_FORMAT = `Respond ONLY as JSON (no markdown, no code fences, no extra text):
+{"findings":[{"agent":"<area id from the list>","title":"Short finding name","severity":"critical|high|medium|low|info","description":"Clear explanation grounded in the data","impact":"What an attacker could do","fix_steps":["Step 1","Step 2"],"code_example":"config/code snippet or empty string","resources":["https://link.com"]}],"summary":"One sentence summary"}
+Every finding MUST include an "agent" field equal to one of the area ids listed above. Areas with no finding are simply omitted.`;
 
-  const res = await fetch(LLM_API_URL, {
+function buildTeamPrompt(ctx: TargetContext, agents: Agent[]): string {
+  const context = [
+    formatContext(ctx),
+    formatCalibration(ctx.calibration),
+    formatTechFingerprints(ctx.techFingerprints),
+    formatPathProbes(ctx.pathProbes),
+    formatScriptScans(ctx.scriptScans),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const areas = agents.map((a) => `- ${a.id}: ${a.focus}`).join("\n");
+
+  return `You are a team of website security specialists assessing ONE target. All evidence has already been gathered for you below. Assess ONLY the areas listed and report findings grounded strictly in this evidence.
+
+${context}
+
+AREAS TO ASSESS (tag every finding with the matching area id):
+${areas}
+${ANALYSIS_RULES}
+${TEAM_JSON_FORMAT}`;
+}
+
+// =====================================================================
+// LLM CALL — provider auto-selected by which API key is present.
+// Both Groq and Google Gemini expose OpenAI-compatible chat endpoints, so the
+// same request shape works for both. Set GEMINI_API_KEY to use Gemini, or
+// GROQ_API_KEY (or legacy CEREBRAS_API_KEY) to use Groq.
+// =====================================================================
+type LLMProvider = { url: string; model: string; key: string; kind: "gemini" | "groq" };
+
+function resolveProvider(): LLMProvider {
+  // Groq is the default. With the combined-call design a whole scan is only ~3
+  // calls, which fits Groq's limits and finishes in a few seconds (verified).
+  // Gemini is a fallback (used when only a Gemini key is set) — its free tier
+  // has a tight daily request cap, so it's not the default.
+  const groq = process.env.GROQ_API_KEY || process.env.CEREBRAS_API_KEY;
+  if (groq) {
+    return {
+      url: "https://api.groq.com/openai/v1/chat/completions",
+      model: process.env.GROQ_MODEL || "openai/gpt-oss-120b",
+      key: groq,
+      kind: "groq",
+    };
+  }
+  const gemini = process.env.GEMINI_API_KEY;
+  if (gemini) {
+    return {
+      url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+      key: gemini,
+      kind: "gemini",
+    };
+  }
+  throw new Error("No LLM API key set (GROQ_API_KEY or GEMINI_API_KEY)");
+}
+
+async function callLLM(prompt: string, maxTokens = 3000, attempt = 1): Promise<string> {
+  const p = resolveProvider();
+
+  const payload: Record<string, unknown> = {
+    model: p.model,
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: maxTokens,
+  };
+  // reasoning_effort is a gpt-oss (Groq) parameter; Gemini doesn't use it.
+  if (p.kind === "groq") payload.reasoning_effort = "low";
+
+  const res = await fetch(p.url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${p.key}`,
     },
-    body: JSON.stringify({
-      model: LLM_MODEL,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 3000,
-      reasoning_effort: "low",
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (res.status === 429 && attempt <= 4) {
     const waitMs = 3000 * Math.pow(2, attempt - 1);
     console.log(`  429 rate-limited, waiting ${waitMs}ms then retrying (attempt ${attempt}/4)`);
     await sleep(waitMs);
-    return callLLM(prompt, attempt + 1);
+    return callLLM(prompt, maxTokens, attempt + 1);
   }
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`LLM API error ${res.status}: ${err.slice(0, 200)}`);
+    throw new Error(`LLM API error ${res.status} (${p.kind}): ${err.slice(0, 200)}`);
   }
 
   const data = await res.json();
@@ -1026,59 +946,52 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // ---- Step 4: run agents sequentially ----
-      const runAgent = async (agent: (typeof AGENTS)[number]) => {
-        send({ type: "agent_start", agentId: agent.id, name: agent.name, emoji: agent.emoji });
-        try {
-          const text = await callLLM(agent.prompt(ctx));
-          let parsed: { findings?: unknown[]; summary?: string };
-          try {
-            const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-            const jsonMatch = clean.match(/\{[\s\S]*\}/);
-            parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
-          } catch {
-            parsed = {
-              findings: [
-                {
-                  title: "Analysis completed",
-                  severity: "info",
-                  description: text.slice(0, 300),
-                  impact: "Review manually",
-                  fix_steps: ["Manual review needed"],
-                  code_example: "",
-                  resources: [],
-                },
-              ],
-              summary: "Agent completed",
-            };
-          }
-          send({
-            type: "agent_done",
-            agentId: agent.id,
-            name: agent.name,
-            emoji: agent.emoji,
-            description: agent.description,
-            findings: parsed.findings || [],
-            summary: parsed.summary || "",
-          });
-        } catch (err) {
-          console.error(`[${agent.id}]`, err);
-          send({
-            type: "agent_error",
-            agentId: agent.id,
-            name: agent.name,
-            emoji: agent.emoji,
-            error: err instanceof Error ? err.message : "Unknown error",
-          });
-        }
-      };
+      // ---- Step 4: analyze in a few COMBINED calls ----
+      // Group the 12 areas into a handful of prompts (default 4 areas/call = 3
+      // calls). Far fewer LLM calls keeps us under free-tier token/request
+      // limits AND finishes fast; findings are then fanned back out to each card.
+      for (const a of AGENTS) {
+        send({ type: "agent_start", agentId: a.id, name: a.name, emoji: a.emoji });
+      }
 
-      // Batched — 4 agents at a time. Balances speed vs free-tier rate limits.
-      const BATCH_SIZE = 4;
-      for (let i = 0; i < AGENTS.length; i += BATCH_SIZE) {
-        const batch = AGENTS.slice(i, i + BATCH_SIZE);
-        await Promise.all(batch.map(runAgent));
-        if (i + BATCH_SIZE < AGENTS.length) await sleep(1500);
+      const GROUP_SIZE = Math.max(1, Number(process.env.AGENT_GROUP_SIZE) || 6);
+      const groups: Agent[][] = [];
+      for (let i = 0; i < AGENTS.length; i += GROUP_SIZE) groups.push(AGENTS.slice(i, i + GROUP_SIZE));
+
+      const findingsByAgent: Record<string, unknown[]> = {};
+      const erroredAgents = new Set<string>();
+
+      await Promise.all(
+        groups.map(async (group) => {
+          try {
+            const text = await callLLM(buildTeamPrompt(ctx, group), 4000);
+            let parsed: { findings?: Array<{ agent?: unknown } & Record<string, unknown>> };
+            try {
+              const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+              const jsonMatch = clean.match(/\{[\s\S]*\}/);
+              parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
+            } catch {
+              parsed = { findings: [] };
+            }
+            for (const f of parsed.findings || []) {
+              const id = typeof f.agent === "string" ? f.agent : "";
+              if (!group.some((a) => a.id === id)) continue; // drop mis-tagged findings
+              (findingsByAgent[id] ||= []).push(f);
+            }
+          } catch (err) {
+            console.error(`[group ${group.map((a) => a.id).join(",")}]`, err);
+            for (const a of group) erroredAgents.add(a.id);
+          }
+        })
+      );
+
+      // Fan results back out to each of the 12 agent cards.
+      for (const a of AGENTS) {
+        if (erroredAgents.has(a.id)) {
+          send({ type: "agent_error", agentId: a.id, name: a.name, emoji: a.emoji, error: "AI service busy (rate limit) — please try again in a moment." });
+        } else {
+          send({ type: "agent_done", agentId: a.id, name: a.name, emoji: a.emoji, description: a.description, findings: findingsByAgent[a.id] || [], summary: "" });
+        }
       }
 
       send({ type: "done" });
