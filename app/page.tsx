@@ -198,6 +198,16 @@ function CyberBg() {
   );
 }
 
+// Chaos experiments only: opening the page with ?chaos=<mode>&ck=<secret> passes
+// the mode to the scan route, which ignores it unless the secret matches CHAOS_KEY.
+function chaosParams(): { chaos?: string; chaosKey?: string } {
+  if (typeof window === "undefined") return {};
+  const q = new URLSearchParams(window.location.search);
+  const chaos = q.get("chaos");
+  const chaosKey = q.get("ck");
+  return chaos && chaosKey ? { chaos, chaosKey } : {};
+}
+
 export default function Home() {
   const [url, setUrl] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -247,7 +257,7 @@ export default function Home() {
 
     abortRef.current = new AbortController();
     try {
-      const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: scanUrl }), signal: abortRef.current.signal });
+      const res = await fetch("/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: scanUrl, ...chaosParams() }), signal: abortRef.current.signal });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({ error: "Something went wrong" }));
